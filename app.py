@@ -1,157 +1,102 @@
-import pandas as pd
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import joblib
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_percentage_error
-import time
+from datetime import datetime
 
+app = Flask(__name__)
+# Configure CORS pour accepter les requêtes du frontend Vercel
+CORS(app, origins=[
+    'http://localhost:3000',  # développement local
+    'https://*.vercel.app',   # domaines Vercel
+    'https://mycar-frontend.vercel.app'  # ton domaine spécifique
+])
+
+# Chargez votre modèle et vos encodeurs
 try:
-    # Charger et préparer les données
-    print("Chargement et préparation des données...")
-    df = pd.read_csv('car_prices.csv')
-    
-    # Feature Engineering avancé
-    df['age'] = 2024 - df['year']
-    df['miles_per_year'] = df['odometer'] / df['age']
-    df['condition_score'] = df['condition'] * (1 - df['age']/100)
-    
-    # Nettoyage avancé des données
-    df = df.dropna()
-    df = df[df['sellingprice'] > 100]  # Éliminer les prix aberrants
-    df = df[df['odometer'] < 500000]    # Éliminer les kilométrages aberrants
-    
-    print(f"Nombre de voitures dans la base : {len(df)}")
+    model = joblib.load('model/car_price_model.joblib')
+    encoders = joblib.load('model/encoders.joblib')
+except:
+    print("Warning: Model files not found. Prediction will return dummy data.")
 
-    # Features sélectionnées (sans les catégories qui causaient l'erreur)
-    features = [
-        'year', 'make', 'model', 'trim', 'body', 'transmission',
-        'condition', 'odometer', 'color', 'interior',
-        'age', 'miles_per_year', 'condition_score'
-    ]
+# Ajoutez une constante pour le taux de conversion (à mettre à jour régulièrement)
+USD_TO_TND_RATE = 3.12  # exemple de taux
 
-    # Préparation des encodeurs
-    encoders = {}
-    for column in features:
-        if df[column].dtype == 'object':
-            encoders[column] = LabelEncoder()
-            df[column] = encoders[column].fit_transform(df[column].astype(str))
-
-    # Préparation des données
-    X = df[features]
-    y = df['sellingprice']
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-    # Création des modèles
-    print("\nCréation et optimisation des modèles...")
-    
-    # Random Forest optimisé
-    rf_model = RandomForestRegressor(
-        n_estimators=300,
-        max_depth=25,
-        min_samples_split=4,
-        min_samples_leaf=2,
-        max_features='sqrt',
-        n_jobs=-1,
-        random_state=42
-    )
-
-    # Gradient Boosting optimisé
-    gb_model = GradientBoostingRegressor(
-        n_estimators=200,
-        learning_rate=0.1,
-        max_depth=8,
-        min_samples_split=4,
-        min_samples_leaf=2,
-        random_state=42
-    )
-
-    # Entraînement des modèles
-    print("Entraînement des modèles...")
-    start_time = time.time()
-    
-    rf_model.fit(X_train, y_train)
-    gb_model.fit(X_train, y_train)
-    
-    training_time = time.time() - start_time
-    print(f"Modèles entraînés en {training_time:.2f} secondes")
-
-    # Prédictions et évaluation
-    rf_pred = rf_model.predict(X_test)
-    gb_pred = gb_model.predict(X_test)
-    
-    # Moyenne pondérée des prédictions
-    final_pred = 0.6 * rf_pred + 0.4 * gb_pred
-
-    # Métriques de performance
-    print("\nPERFORMANCE DES MODÈLES:")
-    print("="*50)
-    print(f"Random Forest R² Score: {r2_score(y_test, rf_pred):.4f}")
-    print(f"Gradient Boosting R² Score: {r2_score(y_test, gb_pred):.4f}")
-    print(f"Ensemble R² Score: {r2_score(y_test, final_pred):.4f}")
-    print(f"MAPE: {mean_absolute_percentage_error(y_test, final_pred):.2%}")
-
-    # Voiture test
-    voiture_test = {
-        'year': 2015,
-        'make': 'Kia',
-        'model': 'Sorento',
-        'trim': 'LX',
-        'body': 'SUV',
-        'transmission': 'automatic',
-        'condition': 5.0,
-        'odometer': 200000.0,
-        'color': 'white',
-        'interior': 'black'
-    }
-
-    # Ajout des features calculées
-    voiture_test['age'] = 2024 - voiture_test['year']
-    voiture_test['miles_per_year'] = voiture_test['odometer'] / voiture_test['age']
-    voiture_test['condition_score'] = voiture_test['condition'] * (1 - voiture_test['age']/100)
-    
-    # Prédiction avec l'ensemble des modèles
-    def predict_price(input_data):
-        input_df = pd.DataFrame([input_data])
+@app.route('/predict', methods=['POST'])
+def predict():
+    try:
+        data = request.json
         
-        for column in features:
-            if input_df[column].dtype == 'object':
-                input_df[column] = encoders[column].transform(input_df[column].astype(str))
-        
-        rf_price = rf_model.predict(input_df)[0]
-        gb_price = gb_model.predict(input_df)[0]
-        
-        return 0.6 * rf_price + 0.4 * gb_price
+        # Extraction des données du frontend
+        year = data.get('year')
+        make = data.get('make')
+        model_name = data.get('model')
+        mileage = data.get('mileage')
+        condition = data.get('condition', 5)  # Valeur par défaut de 5
 
-    # Prédiction finale
-    prix_estime = predict_price(voiture_test)
+        # Validation des données
+        if not all([year, make, model_name, mileage]):
+            return jsonify({
+                'error': 'Missing required fields'
+            }), 400
 
-    # Affichage des résultats
-    print("\n" + "="*50)
-    print("IMPORTANCE DES CARACTÉRISTIQUES:")
-    print("="*50)
-    feature_importance = pd.DataFrame({
-        'feature': features,
-        'importance': rf_model.feature_importances_
-    }).sort_values('importance', ascending=False)
+        try:
+            # Prédiction du prix
+            # Remplacez ce bloc par votre logique de prédiction réelle
+            predicted_price = calculate_predicted_price(year, make, model_name, mileage, condition)
+            
+            # Format de réponse correspondant au frontend
+            return jsonify({
+                'predicted_price': predicted_price
+            })
+
+        except Exception as e:
+            return jsonify({
+                'error': f'Prediction error: {str(e)}'
+            }), 500
+
+    except Exception as e:
+        return jsonify({
+            'error': f'Server error: {str(e)}'
+        }), 500
+
+def calculate_predicted_price(year, make, model_name, mileage, condition):
     
-    for idx, row in feature_importance.head(10).iterrows():
-        print(f"{row['feature']}: {row['importance']:.3f}")
+    try:
+        # Si le modèle est chargé, utilisez-le pour la prédiction
+        if 'model' in globals():
+            # Préparation des features
+            features = np.array([[
+                year,
+                encoders['make_encoder'].transform([make])[0],
+                encoders['model_encoder'].transform([model_name])[0],
+                mileage,
+                condition
+            ]])
+            
+            # Prédiction
+            predicted_price = model.predict(features)[0]
+            # Conversion en TND
+            predicted_price_tnd = predicted_price * USD_TO_TND_RATE
+            return float(predicted_price_tnd)
+            
+        else:
+            # Retourne une estimation factice pour les tests
+            base_price = 50000
+            age_factor = (datetime.now().year - year) * 1000
+            mileage_factor = mileage * 0.01
+            condition_factor = (10 - condition) * 1000
+            
+            estimated_price = base_price - age_factor - mileage_factor - condition_factor
+            # Conversion en TND
+            estimated_price_tnd = estimated_price * USD_TO_TND_RATE
+            return max(estimated_price_tnd, 5000 * USD_TO_TND_RATE)  # Prix minimum de 5000
 
-    print("\n" + "="*50)
-    print("DÉTAILS DE LA VOITURE TESTÉE:")
-    print("="*50)
-    for key, value in voiture_test.items():
-        print(f"{key.capitalize()}: {value}")
+    except Exception as e:
+        print(f"Prediction error: {str(e)}")
+        raise
 
-    print("\n" + "="*50)
-    print("ESTIMATION FINALE:")
-    print("="*50)
-    print(f"Prix estimé    : ${prix_estime:,.2f}")
-    print(f"Intervalle de confiance: ${prix_estime*0.9:,.2f} - ${prix_estime*1.1:,.2f}")
-
-except Exception as e:
-    print(f"\nUne erreur est survenue : {str(e)}")
-    print("Détails supplémentaires:")
-    import traceback
-    print(traceback.format_exc())
+if __name__ == '__main__':
+    import os
+    port = int(os.environ.get('PORT', 5001))
+    app.run(host='0.0.0.0', port=port, debug=False)
